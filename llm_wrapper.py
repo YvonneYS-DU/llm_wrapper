@@ -5,20 +5,35 @@ from datetime import datetime
 
 # Importing necessary modules and classes from OpenAI and LangChain
 from openai import OpenAI
-from langchain_openai import ChatOpenAI
+#from langchain_openai import ChatOpenAI
+#from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
     MessagesPlaceholder,
     SystemMessagePromptTemplate,
 )
-from langchain_core.output_parsers import StrOutputParser
+
+from langchain_openai import AzureChatOpenAI
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+
 
 class Agents:
     def __init__(self):
         self.agents = []
-  
-    
+
+
+    @staticmethod
+    def _text_prompts(text_prompt_template = 'text prompt template'):
+        """
+        text prompt template: string of prompt
+        return text prompt template object
+        """
+        text_prompts = HumanMessagePromptTemplate.from_template(
+            [{'text': text_prompt_template}]
+        )
+        return text_prompts
+      
     @staticmethod
     def _image_prompts():
         """
@@ -35,9 +50,10 @@ class Agents:
         """
         image prompt template using base64 image
         return the image prompt template (base64 image)
+        suitable claude and opneai vison-llm (sonnet, 4o, 4o-mini, and etc.)
         """
         image_prompts = HumanMessagePromptTemplate.from_template(
-            [{'image_url': {"url": "data:image/jpeg;base64,{base64_image}", 'detail': '{detail_parameter}'}}]
+            [{"type": "image_url", 'image_url': {"url": "data:image/jpeg;base64,{base64_image}", 'detail': '{detail_parameter}'}}]
         )
         return image_prompts
     
@@ -64,17 +80,6 @@ class Agents:
         image_prompts = HumanMessagePromptTemplate.from_template(template_string)
         
         return image_prompts
-
-    @staticmethod
-    def _text_prompts(text_prompt_template = 'text prompt template'):
-        """
-        text prompt template: string of prompt
-        return text prompt template object
-        """
-        text_prompts = HumanMessagePromptTemplate.from_template(
-            [{'text': text_prompt_template}]
-        )
-        return text_prompts
     
     @staticmethod
     def _system_prompts(system_prompt_template = 'system prompt template'):
@@ -169,37 +174,24 @@ class Agents:
     
     @staticmethod
     def llm_model(
-            model: str = 'openai', 
+            model: str = 'azure_openai',  # Updated to Azure OpenAI
             model_name: str = 'gpt-4o', 
             temperature: float = 0.7, 
-            api_key: str = 'api_key', 
-            streaming: bool = True
+            azure_endpoint: str = None #azure_endpoint
     ):
-        """
-        model: string, default 'openai', model supplier
-        model_name: string, default 'gpt-4', model name gpt-4-turbo, gpt-4o, gpt-4o-mini, new model refer to https://platform.openai.com/docs/models
-        temperature: float, default 0.7, temperature of the model [0,1] 0 strict, 1 creative
-        api_key: string, openai api key
-        streaming: bool, default True, able to stream response, can also not stream response, so keep true
-        
-        return the llm model object
-        """
-        # crate llm model object
-        if model == 'openai':
-            llm = ChatOpenAI(
-                model_name = model_name,
-                temperature = temperature,
-                api_key = api_key,
-                streaming = streaming
+        if model == 'azure_openai':
+            llm = AzureChatOpenAI(
+            azure_deployment = model_name,
+            azure_endpoint = azure_endpoint,
+            temperature = temperature,
             )
-            print(model, model_name, temperature, api_key, streaming)
-            return llm     # return llm model object
-            
+            return llm
+
         else:
             raise ValueError('Model configuration error, check the lambda env config whether in the langchain model list.')
     
     @staticmethod
-    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
+    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
         """
         IMPORTANT: this is the main function to create the chain
         model: llm model object
@@ -214,9 +206,10 @@ class Agents:
         
         return the chain object
         """
+
         LC_prompt_template = Agents.lc_prompt_template(text_prompt_template = text_prompt_template, image_prompt_template = image_prompt_template)
         llm = model
-        output_parser = StrOutputParser()
+        output_parser = output_parser()
         if not parameters:
             chain = LC_prompt_template | llm | output_parser      #return chain: "prompt template | llm model"
             return chain
