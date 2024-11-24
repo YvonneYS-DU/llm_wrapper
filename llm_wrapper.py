@@ -7,7 +7,7 @@ from datetime import datetime
 from openai import OpenAI
 #from langchain_openai import ChatOpenAI
 #from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import (
+from langchain_core.prompts import (    
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
     MessagesPlaceholder,
@@ -174,12 +174,12 @@ class Agents:
     
     @staticmethod
     def llm_model(
-            model: str = 'azure_openai',  # Updated to Azure OpenAI
+            model: str = 'openai',  
             model_name: str = 'gpt-4o', 
             temperature: float = 0.7, 
-            azure_endpoint: str = None #azure_endpoint
+            azure_endpoint: str = None 
     ):
-        if model == 'azure_openai':
+        if model == 'openai':
             llm = AzureChatOpenAI(
             azure_deployment = model_name,
             azure_endpoint = azure_endpoint,
