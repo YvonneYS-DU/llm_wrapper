@@ -1,13 +1,18 @@
+#llm wrapper @01/Apl/2025
 import json
 import re
 import asyncio
 from datetime import datetime
+import base64
+import fitz
+from PIL import Image
+from io import BytesIO
 
 # Importing necessary modules and classes from OpenAI and LangChain
 from openai import OpenAI
-#from langchain_openai import ChatOpenAI
-#from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import (    
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_core.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
     MessagesPlaceholder,
@@ -18,11 +23,11 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 
 
+    
 class Agents:
     def __init__(self):
         self.agents = []
-
-
+        
     @staticmethod
     def _text_prompts(text_prompt_template = 'text prompt template'):
         """
@@ -33,7 +38,7 @@ class Agents:
             [{'text': text_prompt_template}]
         )
         return text_prompts
-      
+    
     @staticmethod
     def _image_prompts():
         """
@@ -46,15 +51,64 @@ class Agents:
         return image_prompts
     
     @staticmethod
+    def _convert_pdf_to_base64_img_list(pdf_path, dpi=100, crop_box_mm=(10, 15, 10, 25)):
+        """
+        Convert a PDF to base64-encoded images with optional cropping.
+
+        Args:
+            pdf_path (str): Path to the PDF
+            dpi (int): Image resolution
+            crop_box_mm (tuple): Crop area in mm (left, upper, right, lower)
+
+        Returns:
+            list: List of base64-encoded images
+        """
+        img_list = []
+        pdf_document = fitz.open(pdf_path)
+
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            
+            # Convert crop area from mm to pixels based on DPI
+            if crop_box_mm:
+                crop_box_pixels = (
+                    crop_box_mm[0] * dpi / 25.4,
+                    crop_box_mm[1] * dpi / 25.4,
+                    page.rect.width * dpi / 72 - crop_box_mm[2] * dpi / 25.4,
+                    page.rect.height * dpi / 72 - crop_box_mm[3] * dpi / 25.4
+                )
+                clip = fitz.Rect(*crop_box_pixels)
+                pix = page.get_pixmap(dpi=dpi, clip=clip)
+            else:
+                pix = page.get_pixmap(dpi=dpi)
+
+            # Convert to base64
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_list.append(base64.b64encode(buffered.getvalue()).decode("utf-8"))
+        
+        pdf_document.close()
+        return img_list
+
+    @staticmethod
     def _image_prompts_base64():
         """
         image prompt template using base64 image
         return the image prompt template (base64 image)
         suitable claude and opneai vison-llm (sonnet, 4o, 4o-mini, and etc.)
         """
-        image_prompts = HumanMessagePromptTemplate.from_template(
-            [{"type": "image_url", 'image_url': {"url": "data:image/jpeg;base64,{base64_image}", 'detail': '{detail_parameter}'}}]
-        )
+        template_string = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/jpeg;base64,{base64_image}",
+                    "detail": "{detail_parameter}"
+                }
+            }
+        ]
+        image_prompts = HumanMessagePromptTemplate.from_template(template_string)
+
         return image_prompts
     
     @staticmethod
@@ -67,19 +121,31 @@ class Agents:
         create the image prompt template (base64 image) ALREADY FILLed image and detail parameter
         return the FILLed image prompt template (base64 image)
         """
-        # build the url part
-        url_part = f"data:image/jpeg;base64,{base64_image}"
-        
-        # build the detail part
-        detail_part = f"{detail_parameter}"
-        
-        # formulate the template string
-        template_string = [{"image_url": {"url": url_part, "detail": detail_part}}] # detail: high, low, auto
-        
+        # Template string with placeholders
+        template_string = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}",
+                    "detail": f"{detail_parameter}"
+                }
+            }
+        ]
+
         # template to object
         image_prompts = HumanMessagePromptTemplate.from_template(template_string)
         
         return image_prompts
+
+    @staticmethod
+    def list_to_img_dict(img_list):
+        """
+        Convert a list of images to a dictionary with keys as 'img1', 'img2', ...
+        img_list: List of images (e.g., base64 strings or URLs)
+
+        Returns a dictionary with image keys.
+        """
+        return {f"img{i+1}": img for i, img in enumerate(img_list)}
     
     @staticmethod
     def _system_prompts(system_prompt_template = 'system prompt template'):
@@ -107,7 +173,7 @@ class Agents:
         return unique_parameters
     
     @staticmethod
-    def lc_prompt_template(text_prompt_template = 'text prompt template', image_prompt_template = False):
+    def lc_prompt_template(text_prompt_template = 'text prompt template', system_prompt_template=None, image_prompt_template = False, image_list=[], fill_img = True):
         """
         text_prompt_template: string of prompt
         image_prompt_template: bool, default False, if True, image prompt will be added
@@ -116,30 +182,50 @@ class Agents:
             )
         return the chat prompt template object
         """
-        chat_prompt_template = ChatPromptTemplate.from_messages(
-            messages=[
-                Agents._text_prompts(text_prompt_template),
-                *([Agents._image_prompts_base64()] if image_prompt_template else []), # default need base64 image
-            ])
+        if system_prompt_template: # system prompt
+            chat_prompt_template = ChatPromptTemplate.from_messages(
+                messages=[
+                    Agents._system_prompts(system_prompt_template),
+                    Agents._text_prompts(text_prompt_template),
+                    *([Agents._image_prompts_base64] if image_prompt_template else []), # default need base64 image
+                ]
+            )
+        else:
+            if image_list: # multi-image prompt
+                chat_prompt_template = Agents.multi_image_templates(text_prompt_template=text_prompt_template, image_list=image_list, fill_img=fill_img)
+            else: # zero/single-image prompt
+                chat_prompt_template = ChatPromptTemplate.from_messages(
+                    messages=[
+                        Agents._text_prompts(text_prompt_template),  
+                        *([Agents._image_prompts_base64()] if image_prompt_template else [])
+                    ])
         return chat_prompt_template
     
     @staticmethod
-    def multi_image_templates(text_prompt_template='text prompt template', image_prompt_template=False, image_list=[]):
+    def multi_image_templates(text_prompt_template='text prompt template', fill_img=True, image_list=[], detail_parameter = 'high'):
         """
-        this is a multi-image prompt template
+        This is a multi-image prompt template.
         text_prompt_template: string of prompt
-        image_prompt_template: bool, default False,
+        image_in_prompt: bool, default True, determines whether to include images in the prompt
         image_list: list of base64 images
 
-        return the prompt template object (with multi-image)
+        Returns the prompt template object (with multi-image or placeholder templates)
         """
-        # text prompt template
+        # Text prompt template
         text_prompts = [Agents._text_prompts(text_prompt_template)]
-        # multi-image prompt template
-        image_prompts = [
-            Agents._image_prompts_base64_multi(image, "auto")
-            for image in image_list
-        ] if image_prompt_template else []
+        
+        if fill_img:
+            # Multi-image prompt template with images
+            image_prompts = [
+                Agents._image_prompts_base64_multi(image, detail_parameter)
+                for image in image_list
+            ]
+        else:
+            # Placeholder image prompts with unique parameter names (img1, img2, ...)
+            image_prompts = [
+                Agents._image_prompts_base64_multi(f"{base64_image_placeholder}", detail_parameter)
+                for base64_image_placeholder in [f"img{i+1}" for i in range(len(image_list))]
+            ]
 
         # compose the chat prompt template
         chat_prompt_template = ChatPromptTemplate.from_messages(
@@ -149,49 +235,32 @@ class Agents:
         # chain = chat_prompt_template | llm | output_parser
         return chat_prompt_template
     
-    @staticmethod
-    def generate_image(prompt, number_of_images=1, size='1792x1024', style='natural', quality = 'standard', api_key='api_key'):
-        """
-        prompt: string of prompt to generate image
-        number_of_images: int, default 1, number of images to generate
-        size: string, default '1792x1024', size of the image, openai choices: ['256x256', '512x512', '1024x1024', '1024x1792', '1792x1024']
-        style: string, default 'natural', disabled for bad image quality, openai choices: ['vivid', 'natural']
-        quality: string, default 'standard', openai choices: ['standard', 'hd']
-        api_key: string, openai api key
+    # @staticmethod
+    # def generate_image(prompt, number_of_images=1, size='1792x1024', style='natural', quality = 'standard', api_key='api_key'):
+    #     """
+    #     prompt: string of prompt to generate image
+    #     number_of_images: int, default 1, number of images to generate
+    #     size: string, default '1792x1024', size of the image, openai choices: ['256x256', '512x512', '1024x1024', '1024x1792', '1792x1024']
+    #     style: string, default 'natural', disabled for bad image quality, openai choices: ['vivid', 'natural']
+    #     quality: string, default 'standard', openai choices: ['standard', 'hd']
+    #     api_key: string, openai api key
 
-        return the response of the image generation
-        """
-        client = OpenAI(api_key=api_key)    
-        response = client.images.generate(
-        model = "dall-e-3",
-        prompt = prompt,
-        size = size, # ['256x256', '512x512', '1024x1024', '1024x1792', '1792x1024']
-        n = number_of_images,
-        #style = style, #['vivid', 'natural']
-        quality = quality #['standard', 'hd']
-        )
-        return response
+    #     return the response of the image generation
+    #     """
+    #     client = OpenAI(api_key=api_key)    
+    #     response = client.images.generate(
+    #     model = "dall-e-3",
+    #     prompt = prompt,
+    #     size = size, # ['256x256', '512x512', '1024x1024', '1024x1792', '1792x1024']
+    #     n = number_of_images,
+    #     #style = style, #['vivid', 'natural']
+    #     quality = quality #['standard', 'hd']
+    #     )
+    #     return response
     
-    @staticmethod
-    def llm_model(
-            model: str = 'openai',  
-            model_name: str = 'gpt-4o', 
-            temperature: float = 0.7, 
-            azure_endpoint: str = None 
-    ):
-        if model == 'openai':
-            llm = AzureChatOpenAI(
-            azure_deployment = model_name,
-            azure_endpoint = azure_endpoint,
-            temperature = temperature,
-            )
-            return llm
 
-        else:
-            raise ValueError('Model configuration error, check the lambda env config whether in the langchain model list.')
-    
     @staticmethod
-    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
+    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, image_list=[], fill_image = False, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
         """
         IMPORTANT: this is the main function to create the chain
         model: llm model object
@@ -207,7 +276,7 @@ class Agents:
         return the chain object
         """
 
-        LC_prompt_template = Agents.lc_prompt_template(text_prompt_template = text_prompt_template, image_prompt_template = image_prompt_template)
+        LC_prompt_template = Agents.lc_prompt_template(text_prompt_template = text_prompt_template, system_prompt_template = system_prompt_template, image_prompt_template = image_prompt_template, image_list=image_list, fill_img=fill_image)
         llm = model
         output_parser = output_parser()
         if not parameters:
@@ -218,9 +287,16 @@ class Agents:
             chain = LC_prompt_template | llm | output_parser
             print("Parameters:", parameters)
             return chain, parameters
+    
+    @staticmethod
+    async def _delay(seconds: float):
+        empty_loop = asyncio.get_running_loop()
+        future = empty_loop.create_future()
+        empty_loop.call_later(seconds, future.set_result, None)
+        await future
         
     @staticmethod
-    def chain_stream_generator(chain, dic): # gnerate response in stream, to generate respoonse, CHAIN(template, model) and DIC of parameters are required
+    def chain_stream_generator(chain, dic={}): # gnerate response in stream, to generate respoonse, CHAIN(template, model) and DIC of parameters are required
         """
         stream response in generator, chunk by chunk
         chain: chain object - Agents.chain_create()
@@ -232,7 +308,7 @@ class Agents:
             yield chunk.content
 
     @staticmethod
-    def chain_batch_generator(chain, dic):
+    def chain_batch_generator(chain, dic={}):
         """
         batch generate response
         chain: chain object - Agents.chain_create()
@@ -244,7 +320,7 @@ class Agents:
         return response
     
     @staticmethod
-    async def chain_batch_generator_async(chain, dic):
+    async def chain_batch_generator_async(chain, dic={}, delay=None, max_retries=2):
         """
         async batch generate response
         this is mainly used in the async function call to analysis images / generate images
@@ -252,100 +328,61 @@ class Agents:
         
         return the response in batch
         """
+        attempt = 0
         print("taks start at:", datetime.now())
-        response = await chain.ainvoke(dic)
+        if delay:
+            print("Waiting for", delay, "seconds before starting the task.")
+            await Agents._delay(delay)
+        while attempt <= max_retries:
+            print("Attempting to invoke the chain...")
+            try:
+                response = await chain.ainvoke(dic)
+                attempt += 1
+                return response
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                attempt += 1
+                if attempt > max_retries:
+                    print("Max retries exceeded. with error:", e)
+                    return e
+                continue
         return response
         
     @staticmethod
-    def sub_agent(llm, sub_agent_prompt_dic): # create sub agents
+    def output_parser(output_string):
         """
-        a dict of sub agents with name and prompt template string
-        {'sub_agent_name': 'prompt template string', ...}
-        
-        return a dict of sub agents with name and chain object
+        this will parse the output TSV string from the llm model
+        Parse a TSV string into a JSON array of objects,
+        removing any code block wrappers (```) if present.
+        Specifically handles tab-separated values.
+        Args:
+            output_string (str): The input text which may contain TSV data with wrappers
+        Returns:
+            list: List of dictionaries where keys are headers and values are row values
         """
-        chains = {}
-        for key, value in sub_agent_prompt_dic.items():
-            chain_name = key
-            prompt_template = Agents.lc_prompt_template(value)
-            chains[chain_name] = prompt_template | llm
-        return chains
-
-    @staticmethod
-    def create_agent(llm, system_prompt_template='system prompt template', text_prompt_template='text prompt template', tools=[]):
-        """
-        create the agent with system prompt template
-        but is similar to chain_create
-        temparary not used in the chainmaker
-
-        return the agent object
-        """
-        system_prompt = Agents._system_prompts(system_prompt_template)
-        
-class API_unpack:
-    """
-    this is the resolver of api passed to call llm.
-    """
-
-
-    @staticmethod
-    def _PromptImporter(prompt_template='prompt tamplate string'):
-        """
-        get the prompt template object.
-        """
-        warning = "[WARNING]: please use [Agents.chain_create(__, prompt_tamplate = 'prompt tamplate string')], this is a developer feature."
-        return warning, Agents.lc_prompt_template(prompt_template=prompt_template)
-    
-    @staticmethod
-    def model_config(config_dic, required_keys=['model', 'model_name', 'temperature', 'api_key', 'streaming']):
-        """
-        may replaced by lambda env config.
-        """
-        default_config = {
-            'model': 'openai',
-            'model_name': 'gpt-4',
-            'temperature': 0.7,
-            'api_key': 'api_key',
-            'streaming': True
-        }
-        final_config = {}
-        # replace the default config with the preferred config
-        for key in required_keys:
-            if key in config_dic:
-                final_config[key] = config_dic[key]
-            else:
-                final_config[key] = default_config[key]
-        return final_config
-    
-    @staticmethod
-    def get_prompt_name(json_from_api):
-        """
-        Get the prompt name from the api response.
-        """
-        try:
-            # Json data from API
-            if isinstance(json_from_api, str):
-                json_data = json.loads(json_from_api)
-            else:
-                json_data = json_from_api
-
-            # Get the prompt_name from the API response
-            for item in json_data.get('prompt', []):
-                if item.get('type') == 'sys':
-                    return item.get('prompt_name', None)
-        
-            # If no prompt_name found
-            print("Error: prompt['type']='sys' not found, or prompt_name not found in the API response.")
-            return None
-
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"Error parsing JSON: {e}.")
-            return None
-
-    @staticmethod
-    def data_parameters(data_dic, required_list='prompt_template'):
-        required_list = Agents._extract_prompts_parameters(required_list)
-        for key in required_list:
-            if key not in data_dic:
-                raise ValueError(f"Missing key: {key}.")
-        return {key: data_dic[key] for key in required_list}
+        # Remove code block wrappers if present
+        tsv_string = re.sub(r'^```.*?\n|```$', '', output_string, flags=re.DOTALL).strip()
+        # Split the TSV string into lines
+        lines = tsv_string.strip().split('\n')
+        # Extract header row and split by tab character
+        headers = lines[0].split('\t')
+        headers = [h.strip() for h in headers]  # Clean up any extra whitespace
+        # Initialize result list
+        result = []
+        # Process each data row (skip the header row)
+        for i in range(1, len(lines)):
+            # Skip empty lines
+            if not lines[i].strip():
+                continue
+            # Split row by tab character
+            values = lines[i].split('\t')
+            values = [v.strip() for v in values]  # Clean up any extra whitespace
+            # Create a dictionary for the current row
+            row_dict = {}
+            # Map each value to its corresponding header
+            for j, header in enumerate(headers):
+                # Use empty string if value doesn't exist
+                row_dict[header] = values[j] if j < len(values) else ''
+            # Add the dictionary to the result list
+            result.append(row_dict)
+        return result
