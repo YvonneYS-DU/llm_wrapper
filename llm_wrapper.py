@@ -260,7 +260,7 @@ class Agents:
     
 
     @staticmethod
-    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, image_list=[], fill_image = False, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
+    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, format_var_name='schema', image_list=[], fill_image = False, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
         """
         IMPORTANT: this is the main function to create the chain
         model: llm model object
@@ -278,16 +278,22 @@ class Agents:
 
         LC_prompt_template = Agents.lc_prompt_template(text_prompt_template = text_prompt_template, system_prompt_template = system_prompt_template, image_prompt_template = image_prompt_template, image_list=image_list, fill_img=fill_image)
         llm = model
-        output_parser = output_parser()
+        if hasattr(output_parser, 'get_format_instructions'):
+            if f"{{{format_var_name}}}" in text_prompt_template:
+                partial_dict = {format_var_name: output_parser.get_format_instructions()}
+                LC_prompt_template = LC_prompt_template.partial(**partial_dict)
+            else:
+                print(f"Warning: {format_var_name} not found in prompt template, skipping format instructions")
+        
         if not parameters:
-            chain = LC_prompt_template | llm | output_parser      #return chain: "prompt template | llm model"
+            chain = LC_prompt_template | llm | output_parser
             return chain
         else:
-            parameters = Agents._extract_prompts_parameters(text_prompt_template)  # list of parameters
+            parameters = Agents.extract_prompts_parameters(text_prompt_template) 
             chain = LC_prompt_template | llm | output_parser
             print("Parameters:", parameters)
             return chain, parameters
-    
+   
     @staticmethod
     async def _delay(seconds: float):
         empty_loop = asyncio.get_running_loop()
@@ -307,8 +313,9 @@ class Agents:
         for chunk in chain.stream(dic):
             yield chunk.content
 
+
     @staticmethod
-    def chain_batch_generator(chain, dic={}):
+    def chain_batch_generator(chain, dic=None, max_retries=2):
         """
         batch generate response
         chain: chain object - Agents.chain_create()
@@ -316,8 +323,22 @@ class Agents:
         
         return the response in batch
         """
-        response = chain.invoke(dic)
-        return response
+        if dic is None:
+            dic = {}
+        
+        attempt = 0
+        
+        while attempt <= max_retries:
+            try:
+                response = chain.invoke(dic)
+                return response
+            except Exception as e:
+                attempt += 1
+                if attempt > max_retries:
+                    raise Exception(f"AI encountered some issues, please try again later{e}")
+                else:
+                    continue
+    
     
     @staticmethod
     async def chain_batch_generator_async(chain, dic={}, delay=None, max_retries=2):
