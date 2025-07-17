@@ -1,57 +1,167 @@
-# intuitive ai agent prompt framework
+# LLM Wrapper
 
-The primary goal of llmwrapper is to provide a streamlined, developer-friendly interface that reduces the complexity of working with LangChain’s more intricate features. 
+A streamlined Python wrapper for LangChain that simplifies AI agent creation with multi-modal support.
 
-# Key Features and Technologies
+## Features
 
-The project is primarily built on LangChain’s architecture and encapsulates its core functions, with a design that focuses on:
+- **Simple API**: Create AI chains with one function call
+- **Multi-modal Support**: Handle text and image inputs seamlessly
+- **Flexible Output**: String or JSON parsing options
+- **Async/Sync Execution**: Both blocking and non-blocking calls
+- **Streaming Support**: Real-time response streaming
+- **Error Handling**: Built-in retry mechanisms
 
-*Simple prompt creation:* Making it easier to generate both text and image prompts.
-*Support text and image prompts:* Supporting multi-modal prompt generation, including Base64-encoded image inputs.
-*Chain creation:* Streamlining the process of constructing chains, which integrate prompts, models, and output parsers.
-*Agent generation:* Offering an intuitive interface for creating agents that handle more complex tasks.
-*Asynchronous execution:* Async API calling
-
-# example using llm_wrapper
-## import llm model
+## Installation
 
 ```bash
-llm = Agents.llm_model(
-    model='openai', 
-    model_name='gpt-4o', 
-    temperature=0.7, 
-    api_key='your-api-key'
+pip install langchain-openai langchain-anthropic langchain-core
+pip install PyMuPDF Pillow  # For image processing
+```
+
+## Quick Start
+
+```python
+from llm_wrapper import Agents
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+
+# Initialize model
+llm = ChatOpenAI(model_name='gpt-4o-mini', temperature=0, api_key='your-api-key')
+
+# Create chain
+chain = Agents.chain_create(
+    model=llm,
+    text_prompt_template="Answer this question: {question}",
+    output_parser=StrOutputParser()
 )
+
+# Generate response
+response = Agents.chain_batch_generator(chain, {"question": "What is AI?"})
+print(response)
 ```
 
-## set prompt template
-prompt template have two feature now, to better illustrate, function name is lc_prompt_template(text_prompt_template, image_prompt_template):
-```bash
-text_prompt_template = 'text_prompt_template, is string, when using {}, means is a {parameter}，{parameter} must filled when, calling the api, {parameter} will replaced by f-string by langchain; when want just show '{' string, use /{/} or {{info}}
+## Usage Examples
+
+### Text Processing
+
+```python
+# Basic text prompt
+prompt = "Translate '{text}' to {language}"
+chain = Agents.chain_create(llm, prompt)
+result = Agents.chain_batch_generator(chain, {"text": "Hello", "language": "French"})
 ```
 
-```bash
-image_prompt_template = True / False, true meams use image template, false means not use image template.
+### Image Processing
+
+```python
+# Image analysis
+import base64
+
+def image_to_base64(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode('utf-8')
+
+chain = Agents.chain_create(
+    model=llm,
+    text_prompt_template="Describe this image: {base64_image}",
+    image_prompt_template=True
+)
+
+image_b64 = image_to_base64("image.jpg")
+result = Agents.chain_batch_generator(chain, {"base64_image": image_b64})
 ```
 
-## formulating a langchain prompt
-when prompt template is set, we can build a chain in one line of code.
-```bash
-chain = Agents.chain_create(model = llm, text_prompt_template = "text_prompt_template", image_prompt_template = False, output_parser = StrOutputParser, parameters=False)
-```
-image_prompt_template = False/True, False means not use image template, True means use image template. when image_prompt_template is True, image should be processed into base64 format, when calling the function.
-output_parser = StrOutputParser/JsonOutputParser, StrOutputParser means AI output is string, JsonOutputParser means AI output is json format.
+### JSON Output
 
-## calling the chain
-aysnc call:
-```bash
-output = await Agents.chain_batch_generator_async(chain, dic)
+```python
+from langchain_core.output_parsers import JsonOutputParser
+
+prompt = """Analyze sentiment and return JSON:
+{
+  "sentiment": "positive/negative/neutral",
+  "confidence": 0.95
+}
+Text: {text}"""
+
+chain = Agents.chain_create(llm, prompt, output_parser=JsonOutputParser())
+result = Agents.chain_batch_generator(chain, {"text": "Great product!"})
 ```
-sync call:
-```bash
-output = Agents.chain_batch_generator(chain, dic)
+
+### Async Processing
+
+```python
+import asyncio
+
+async def process_text():
+    result = await Agents.chain_batch_generator_async(
+        chain, 
+        {"text": "Hello world"}, 
+        delay=0.5
+    )
+    return result
+
+response = asyncio.run(process_text())
 ```
-streaming call:
-```bash
-output = Agents.chain_stream_generator(chain, dic)
+
+### Streaming Responses
+
+```python
+for chunk in Agents.chain_stream_generator(chain, {"text": "Tell me a story"}):
+    print(chunk, end="", flush=True)
 ```
+
+## API Reference
+
+### `Agents.chain_create()`
+
+Creates a LangChain processing chain.
+
+**Parameters:**
+- `model`: LLM model instance
+- `text_prompt_template`: String template with `{parameter}` placeholders
+- `image_prompt_template`: Boolean, enable image processing
+- `output_parser`: `StrOutputParser()` or `JsonOutputParser()`
+- `image_list`: List of base64 images for multi-image processing
+
+### `Agents.chain_batch_generator()`
+
+Synchronous chain execution with retry logic.
+
+**Parameters:**
+- `chain`: Chain object from `chain_create()`
+- `dic`: Dictionary of parameters to fill template
+- `max_retries`: Maximum retry attempts (default: 2)
+
+### `Agents.chain_batch_generator_async()`
+
+Asynchronous chain execution.
+
+**Parameters:**
+- `chain`: Chain object
+- `dic`: Parameter dictionary
+- `delay`: Optional delay before execution
+- `max_retries`: Maximum retry attempts
+
+### `Agents.chain_stream_generator()`
+
+Streaming response generator.
+
+**Parameters:**
+- `chain`: Chain object
+- `dic`: Parameter dictionary
+
+## Supported Models
+
+- **OpenAI**: GPT-4, GPT-4o, GPT-4o-mini
+- **Anthropic**: Claude 3.5 Sonnet, Claude 3 Haiku
+- **Azure OpenAI**: Compatible with Azure endpoints
+
+## Examples
+
+See `example.ipynb` for comprehensive usage examples including:
+- Basic text processing
+- Image analysis
+- Multi-image processing
+- JSON output parsing
+- Async/sync execution patterns
+- Streaming responses

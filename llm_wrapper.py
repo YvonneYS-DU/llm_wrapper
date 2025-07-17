@@ -1,38 +1,67 @@
-#llm wrapper @01/Apl/2025
-import json
+"""
+LLM Wrapper - A streamlined interface for LangChain AI agent creation.
+
+This module provides a simplified API for creating and managing AI agents
+with multi-modal support (text and images) using LangChain framework.
+
+Author: LLM Wrapper Team
+Version: 0.1
+Date: January 2025
+"""
+
 import re
 import asyncio
 from datetime import datetime
+from typing import List, Dict, Any, Optional, Union, Generator
 import base64
+
 import fitz
 from PIL import Image
 from io import BytesIO
 
 # Importing necessary modules and classes from OpenAI and LangChain
-from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
-    MessagesPlaceholder,
     SystemMessagePromptTemplate,
 )
-
-from langchain_openai import AzureChatOpenAI
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 
 
-    
+
+
 class Agents:
-    def __init__(self):
-        self.agents = []
+    """
+    A utility class for creating and managing AI agents with LangChain.
+    
+    This class provides static methods for creating prompts, chains, and
+    executing AI model calls with support for text and image inputs.
+    """
+    
+    def __init__(self) -> None:
+        """
+        Initialize the Agents class.
+        
+        Note: This class is primarily used as a utility class with static methods.
+        """
+        self.agents: List[Any] = []
         
     @staticmethod
-    def _text_prompts(text_prompt_template = 'text prompt template'):
+    def _text_prompts(text_prompt_template: str = 'text prompt template') -> HumanMessagePromptTemplate:
         """
-        text prompt template: string of prompt
-        return text prompt template object
+        Create a text prompt template for human messages.
+        
+        Args:
+            text_prompt_template: The template string for the text prompt.
+                                Use {parameter} for variable substitution.
+                                
+        Returns:
+            HumanMessagePromptTemplate: A LangChain prompt template object for text input.
+            
+        Example:
+            >>> template = Agents._text_prompts("Hello {name}, how are you?")
         """
         text_prompts = HumanMessagePromptTemplate.from_template(
             [{'text': text_prompt_template}]
@@ -40,10 +69,16 @@ class Agents:
         return text_prompts
     
     @staticmethod
-    def _image_prompts():
+    def _image_prompts() -> HumanMessagePromptTemplate:
         """
-        image prompt template using path
-        return the image prompt template (path)
+        Create an image prompt template using file path.
+        
+        Returns:
+            HumanMessagePromptTemplate: A LangChain prompt template object for image input via path.
+            
+        Note:
+            This method creates a template expecting {image_path} and {detail_parameter}
+            variables to be filled when the prompt is used.
         """
         image_prompts = HumanMessagePromptTemplate.from_template(
             [{'image_url': {'path': '{image_path}', 'detail': '{detail_parameter}'}}]
@@ -51,17 +86,30 @@ class Agents:
         return image_prompts
     
     @staticmethod
-    def _convert_pdf_to_base64_img_list(pdf_path, dpi=100, crop_box_mm=(10, 15, 10, 25)):
+    def _convert_pdf_to_base64_img_list(
+        pdf_path: str, 
+        dpi: int = 100, 
+        crop_box_mm: Optional[tuple] = (10, 15, 10, 25)
+    ) -> List[str]:
         """
-        Convert a PDF to base64-encoded images with optional cropping.
-
+        Convert a PDF file to a list of base64-encoded images.
+        
         Args:
-            pdf_path (str): Path to the PDF
-            dpi (int): Image resolution
-            crop_box_mm (tuple): Crop area in mm (left, upper, right, lower)
-
+            pdf_path: Path to the PDF file to convert.
+            dpi: Resolution for image conversion in dots per inch.
+            crop_box_mm: Optional cropping area in millimeters as (left, top, right, bottom).
+                        If None, no cropping is applied.
+                        
         Returns:
-            list: List of base64-encoded images
+            List of base64-encoded image strings, one per PDF page.
+            
+        Raises:
+            FileNotFoundError: If the PDF file doesn't exist.
+            Exception: If PDF processing fails.
+            
+        Example:
+            >>> images = Agents._convert_pdf_to_base64_img_list("document.pdf", dpi=150)
+            >>> print(f"Converted {len(images)} pages")
         """
         img_list = []
         pdf_document = fitz.open(pdf_path)
@@ -92,11 +140,20 @@ class Agents:
         return img_list
 
     @staticmethod
-    def _image_prompts_base64():
+    def _image_prompts_base64() -> HumanMessagePromptTemplate:
         """
-        image prompt template using base64 image
-        return the image prompt template (base64 image)
-        suitable claude and opneai vison-llm (sonnet, 4o, 4o-mini, and etc.)
+        Create an image prompt template using base64-encoded images.
+        
+        Returns:
+            HumanMessagePromptTemplate: A LangChain prompt template for base64 image input.
+            
+        Note:
+            This template is compatible with vision-enabled models like:
+            - Claude 3.5 Sonnet
+            - GPT-4o, GPT-4o-mini
+            - Other vision-capable LLMs
+            
+            The template expects {base64_image} and {detail_parameter} variables.
         """
         template_string = [
             {
@@ -112,14 +169,24 @@ class Agents:
         return image_prompts
     
     @staticmethod
-    def _image_prompts_base64_multi(base64_image, detail_parameter):
+    def _image_prompts_base64_multi(
+        base64_image: str, 
+        detail_parameter: str = 'auto'
+    ) -> HumanMessagePromptTemplate:
         """
-        image prompt template using base64 image
-        upload multiple images in one prompt (conversation)
-        base64_image: base64 image string
-        detail_parameter: string, default 'auto', openai choices: ['high', 'low', 'auto']
-        create the image prompt template (base64 image) ALREADY FILLed image and detail parameter
-        return the FILLed image prompt template (base64 image)
+        Create a pre-filled image prompt template for multi-image conversations.
+        
+        Args:
+            base64_image: Base64-encoded image string.
+            detail_parameter: Image detail level. Options: 'high', 'low', 'auto'.
+                            Default is 'auto' for balanced quality and speed.
+                            
+        Returns:
+            HumanMessagePromptTemplate: A pre-filled prompt template with image data.
+            
+        Note:
+            This method creates a template that's already filled with image data,
+            unlike other template methods that return templates with placeholders.
         """
         # Template string with placeholders
         template_string = [
@@ -138,21 +205,38 @@ class Agents:
         return image_prompts
 
     @staticmethod
-    def list_to_img_dict(img_list):
+    def list_to_img_dict(img_list: List[str]) -> Dict[str, str]:
         """
-        Convert a list of images to a dictionary with keys as 'img1', 'img2', ...
-        img_list: List of images (e.g., base64 strings or URLs)
-
-        Returns a dictionary with image keys.
+        Convert a list of images to a dictionary with numbered keys.
+        
+        Args:
+            img_list: List of images (base64 strings or URLs).
+            
+        Returns:
+            Dictionary with keys 'img1', 'img2', etc., mapped to image data.
+            
+        Example:
+            >>> images = ['base64_img1', 'base64_img2']
+            >>> result = Agents.list_to_img_dict(images)
+            >>> print(result)  # {'img1': 'base64_img1', 'img2': 'base64_img2'}
         """
         return {f"img{i+1}": img for i, img in enumerate(img_list)}
     
     @staticmethod
-    def _system_prompts(system_prompt_template = 'system prompt template'):
+    def _system_prompts(system_prompt_template: str = 'system prompt template') -> SystemMessagePromptTemplate:
         """
-        system prompt template: string of prompt
-        used for agent creation, current not used in the chainmaker
-        return system prompt template object
+        Create a system prompt template for AI agent behavior configuration.
+        
+        Args:
+            system_prompt_template: The system prompt string that defines AI behavior.
+                                   Use {parameter} for variable substitution.
+                                   
+        Returns:
+            SystemMessagePromptTemplate: A LangChain system prompt template object.
+            
+        Note:
+            System prompts define the AI's role, behavior, and constraints.
+            They are processed before user messages in the conversation.
         """
         system_prompts = SystemMessagePromptTemplate.from_template(
             system_prompt_template
@@ -160,11 +244,20 @@ class Agents:
         return system_prompts
     
     @staticmethod
-    def extract_prompts_parameters(prompt_template):
+    def extract_prompts_parameters(prompt_template: str) -> List[str]:
         """
-        Extract the parameters from the prompt template without duplicates.
-        prompt_template: string of prompt
-        return list of unique parameters
+        Extract unique parameter names from a prompt template.
+        
+        Args:
+            prompt_template: The prompt template string containing {parameter} placeholders.
+            
+        Returns:
+            List of unique parameter names found in the template.
+            
+        Example:
+            >>> template = "Hello {name}, your age is {age}. Nice to meet you {name}!"
+            >>> params = Agents.extract_prompts_parameters(template)
+            >>> print(params)  # ['name', 'age']
         """
         # use regex to extract the parameters
         parameters = re.findall(r'{(.*?)}', prompt_template)
@@ -173,66 +266,109 @@ class Agents:
         return unique_parameters
     
     @staticmethod
-    def lc_prompt_template(text_prompt_template = 'text prompt template', system_prompt_template=None, image_prompt_template = False, image_list=[], fill_img = True):
+    def lc_prompt_template(
+        text_prompt_template: str = 'text prompt template',
+        system_prompt_template: Optional[str] = None,
+        image_prompt_template: bool = False,
+        image_list: List[str] = None,
+        fill_img: bool = True
+    ) -> ChatPromptTemplate:
         """
-        text_prompt_template: string of prompt
-        image_prompt_template: bool, default False, if True, image prompt will be added
-            image_prompts = HumanMessagePromptTemplate.from_template(
-                [{'image_url': {'path': '{image_path}', 'detail': '{detail_parameter}'}}]
-            )
-        return the chat prompt template object
+        Create a complete LangChain chat prompt template with optional image support.
+        
+        Args:
+            text_prompt_template: The main text prompt template string.
+            system_prompt_template: Optional system prompt for AI behavior configuration.
+            image_prompt_template: Whether to include image input capability.
+            image_list: List of base64 images for multi-image support.
+            fill_img: Whether to fill image data immediately (True) or use placeholders (False).
+            
+        Returns:
+            ChatPromptTemplate: A complete LangChain chat prompt template.
+            
+        Example:
+            >>> template = Agents.lc_prompt_template(
+            ...     text_prompt_template="Describe the image: {description}",
+            ...     image_prompt_template=True
+            ... )
         """
-        if system_prompt_template: # system prompt
+        if image_list is None:
+            image_list = []
+            
+        if system_prompt_template:  # system prompt
             chat_prompt_template = ChatPromptTemplate.from_messages(
                 messages=[
                     Agents._system_prompts(system_prompt_template),
                     Agents._text_prompts(text_prompt_template),
-                    *([Agents._image_prompts_base64] if image_prompt_template else []), # default need base64 image
+                    *([Agents._image_prompts_base64()] if image_prompt_template else []),
                 ]
             )
         else:
-            if image_list: # multi-image prompt
-                chat_prompt_template = Agents.multi_image_templates(text_prompt_template=text_prompt_template, image_list=image_list, fill_img=fill_img)
-            else: # zero/single-image prompt
+            if image_list:  # multi-image prompt
+                chat_prompt_template = Agents.multi_image_templates(
+                    text_prompt_template=text_prompt_template, 
+                    image_list=image_list, 
+                    fill_img=fill_img
+                )
+            else:  # zero/single-image prompt
                 chat_prompt_template = ChatPromptTemplate.from_messages(
                     messages=[
                         Agents._text_prompts(text_prompt_template),  
                         *([Agents._image_prompts_base64()] if image_prompt_template else [])
-                    ])
+                    ]
+                )
         return chat_prompt_template
     
     @staticmethod
-    def multi_image_templates(text_prompt_template='text prompt template', fill_img=True, image_list=[], detail_parameter = 'high'):
+    def multi_image_templates(
+        text_prompt_template: str = 'text prompt template',
+        fill_img: bool = True,
+        image_list: List[str] = None,
+        detail_parameter: str = 'high'
+    ) -> ChatPromptTemplate:
         """
-        This is a multi-image prompt template.
-        text_prompt_template: string of prompt
-        image_in_prompt: bool, default True, determines whether to include images in the prompt
-        image_list: list of base64 images
-
-        Returns the prompt template object (with multi-image or placeholder templates)
+        Create a multi-image prompt template for processing multiple images simultaneously.
+        
+        Args:
+            text_prompt_template: The main text prompt template string.
+            fill_img: Whether to fill image data immediately (True) or use placeholders (False).
+            image_list: List of base64-encoded images or placeholders.
+            detail_parameter: Image detail level ('high', 'low', 'auto').
+            
+        Returns:
+            ChatPromptTemplate: A prompt template configured for multiple image inputs.
+            
+        Example:
+            >>> template = Agents.multi_image_templates(
+            ...     text_prompt_template="Compare these images: {comparison_task}",
+            ...     image_list=["base64_img1", "base64_img2"],
+            ...     fill_img=True
+            ... )
         """
-        # Text prompt template
+        if image_list is None:
+            image_list = []
+            
+        # Create text prompt component
         text_prompts = [Agents._text_prompts(text_prompt_template)]
         
         if fill_img:
-            # Multi-image prompt template with images
+            # Create prompt templates with actual image data
             image_prompts = [
                 Agents._image_prompts_base64_multi(image, detail_parameter)
                 for image in image_list
             ]
         else:
-            # Placeholder image prompts with unique parameter names (img1, img2, ...)
+            # Create placeholder templates (img1, img2, ...)
             image_prompts = [
-                Agents._image_prompts_base64_multi(f"{base64_image_placeholder}", detail_parameter)
-                for base64_image_placeholder in [f"img{i+1}" for i in range(len(image_list))]
+                Agents._image_prompts_base64_multi(f"img{i+1}", detail_parameter)
+                for i in range(len(image_list))
             ]
 
-        # compose the chat prompt template
+        # Compose the complete chat prompt template
         chat_prompt_template = ChatPromptTemplate.from_messages(
-            messages = text_prompts + image_prompts
+            messages=text_prompts + image_prompts
         )
-        # return the chat prompt template
-        # chain = chat_prompt_template | llm | output_parser
+        
         return chat_prompt_template
     
     # @staticmethod
@@ -260,68 +396,141 @@ class Agents:
     
 
     @staticmethod
-    def chain_create(model, system_prompt_template='', text_prompt_template='prompt tamplate string', image_prompt_template = False, output_parser = StrOutputParser, format_var_name='schema', image_list=[], fill_image = False, parameters=False):  # llm model chreate by llm_model, prompt template string, choose to PRINT the PromptTamplate parameters or not
+    def chain_create(
+        model: Any,
+        system_prompt_template: str = '',
+        text_prompt_template: str = 'prompt template string',
+        image_prompt_template: bool = False,
+        output_parser: Any = StrOutputParser(),
+        format_var_name: str = 'schema',
+        image_list: List[str] = None,
+        fill_image: bool = False,
+        parameters: bool = False
+    ) -> Union[Any, tuple]:
         """
-        IMPORTANT: this is the main function to create the chain
-        model: llm model object
-        text_prompt_template: string, default 'prompt tamplate string', text prompt template
-        image_prompt_template: bool, default False, image prompt template
-
-        system_prompt_template: string, default '', system prompt template, current not used in the chainmaker
-
-        EXAMPLE:
-        chain = Agents.chain_create(llm, text_prompt_template='text prompt template', image_prompt_template=False)
-        then no need to directly call Agents.lc_prompt_template(text_prompt_template='text prompt template', image_prompt_template=False)
+        Create a complete LangChain processing chain with model, prompts, and output parser.
         
-        return the chain object
+        This is the main function for creating AI processing chains. It combines
+        a language model, prompt templates, and output parsers into a single callable chain.
+        
+        Args:
+            model: The language model instance (ChatOpenAI, ChatAnthropic, etc.).
+            system_prompt_template: Optional system prompt to define AI behavior.
+            text_prompt_template: The main text prompt template with {parameter} placeholders.
+            image_prompt_template: Whether to enable image input processing.
+            output_parser: Parser for model output (StrOutputParser, JsonOutputParser, etc.).
+            format_var_name: Variable name for format instructions in templates.
+            image_list: List of base64 images for multi-image processing.
+            fill_image: Whether to fill image data immediately or use placeholders.
+            parameters: Whether to return prompt parameters along with the chain.
+            
+        Returns:
+            Runnable chain object, or tuple of (chain, parameters) if parameters=True.
+            
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> from langchain_core.output_parsers import StrOutputParser
+            >>> llm = ChatOpenAI(model_name='gpt-4o-mini')
+            >>> chain = Agents.chain_create(
+            ...     model=llm,
+            ...     text_prompt_template="Answer this question: {question}",
+            ...     output_parser=StrOutputParser()
+            ... )
+            >>> response = chain.invoke({"question": "What is AI?"})
         """
 
-        LC_prompt_template = Agents.lc_prompt_template(text_prompt_template = text_prompt_template, system_prompt_template = system_prompt_template, image_prompt_template = image_prompt_template, image_list=image_list, fill_img=fill_image)
-        llm = model
+        if image_list is None:
+            image_list = []
+            
+        # Create the prompt template
+        lc_prompt_template = Agents.lc_prompt_template(
+            text_prompt_template=text_prompt_template,
+            system_prompt_template=system_prompt_template,
+            image_prompt_template=image_prompt_template,
+            image_list=image_list,
+            fill_img=fill_image
+        )
+        
+        # Add format instructions if the output parser supports them
         if hasattr(output_parser, 'get_format_instructions'):
             if f"{{{format_var_name}}}" in text_prompt_template:
                 partial_dict = {format_var_name: output_parser.get_format_instructions()}
-                LC_prompt_template = LC_prompt_template.partial(**partial_dict)
+                lc_prompt_template = lc_prompt_template.partial(**partial_dict)
             else:
                 print(f"Warning: {format_var_name} not found in prompt template, skipping format instructions")
         
-        if not parameters:
-            chain = LC_prompt_template | llm | output_parser
-            return chain
+        # Create the chain: prompt | model | parser
+        chain = lc_prompt_template | model | output_parser
+        
+        if parameters:
+            extracted_parameters = Agents.extract_prompts_parameters(text_prompt_template)
+            print("Parameters:", extracted_parameters)
+            return chain, extracted_parameters
         else:
-            parameters = Agents.extract_prompts_parameters(text_prompt_template) 
-            chain = LC_prompt_template | llm | output_parser
-            print("Parameters:", parameters)
-            return chain, parameters
+            return chain
    
     @staticmethod
-    async def _delay(seconds: float):
-        empty_loop = asyncio.get_running_loop()
-        future = empty_loop.create_future()
-        empty_loop.call_later(seconds, future.set_result, None)
-        await future
+    async def _delay(seconds: float) -> None:
+        """
+        Asynchronous delay utility function.
+        
+        Args:
+            seconds: Number of seconds to delay.
+            
+        Example:
+            >>> await Agents._delay(1.5)  # Wait 1.5 seconds
+        """
+        await asyncio.sleep(seconds)
         
     @staticmethod
-    def chain_stream_generator(chain, dic={}): # gnerate response in stream, to generate respoonse, CHAIN(template, model) and DIC of parameters are required
+    def chain_stream_generator(chain: Any, dic: Dict[str, Any] = None) -> Generator[str, None, None]:
         """
-        stream response in generator, chunk by chunk
-        chain: chain object - Agents.chain_create()
-        dic: dictionary of parameters dict to fill all the parameters in the prompt, template show as {parameter: value}
+        Generate streaming responses from a chain, yielding chunks as they arrive.
         
-        return the response in stream
+        Args:
+            chain: The chain object created by Agents.chain_create().
+            dic: Dictionary of parameters to fill template placeholders.
+                Format: {"parameter_name": "value"}
+                
+        Yields:
+            String chunks of the model's response in real-time.
+            
+        Example:
+            >>> chain = Agents.chain_create(llm, "Tell me about {topic}")
+            >>> for chunk in Agents.chain_stream_generator(chain, {"topic": "AI"}):
+            ...     print(chunk, end="", flush=True)
         """
+        if dic is None:
+            dic = {}
+            
         for chunk in chain.stream(dic):
             yield chunk.content
 
 
     @staticmethod
-    def chain_batch_generator(chain, dic=None, max_retries=2):
+    def chain_batch_generator(chain: Any, dic: Dict[str, Any] = None, max_retries: int = 2) -> Any:
         """
-        batch generate response
-        chain: chain object - Agents.chain_create()
-        dic: dictionary of parameters dict to fill all the parameters in the prompt, template show as {parameter: value}
+        Execute a chain synchronously with automatic retry logic.
         
-        return the response in batch
+        Args:
+            chain: The chain object created by Agents.chain_create().
+            dic: Dictionary of parameters to fill template placeholders.
+                Format: {"parameter_name": "value"}
+            max_retries: Maximum number of retry attempts on failure.
+            
+        Returns:
+            The model's response after successful execution.
+            
+        Raises:
+            Exception: If all retry attempts fail.
+            
+        Example:
+            >>> chain = Agents.chain_create(llm, "Translate {text} to {language}")
+            >>> response = Agents.chain_batch_generator(
+            ...     chain, 
+            ...     {"text": "Hello", "language": "French"}
+            ... )
+            >>> print(response)
         """
         if dic is None:
             dic = {}
@@ -335,75 +544,120 @@ class Agents:
             except Exception as e:
                 attempt += 1
                 if attempt > max_retries:
-                    raise Exception(f"AI encountered some issues, please try again later{e}")
+                    raise Exception(f"AI encountered some issues, please try again later: {e}")
                 else:
                     continue
     
     
     @staticmethod
-    async def chain_batch_generator_async(chain, dic={}, delay=None, max_retries=2):
+    async def chain_batch_generator_async(
+        chain: Any, 
+        dic: Dict[str, Any] = None, 
+        delay: Optional[float] = None, 
+        max_retries: int = 2
+    ) -> Any:
         """
-        async batch generate response
-        this is mainly used in the async function call to analysis images / generate images
-        for images async call, please refer to https://github.com/Bingzhi-Du/AI_text_extractor
+        Execute a chain asynchronously with automatic retry logic and optional delay.
         
-        return the response in batch
+        This method is particularly useful for image analysis and batch processing
+        where you want to avoid overwhelming the API with simultaneous requests.
+        
+        Args:
+            chain: The chain object created by Agents.chain_create().
+            dic: Dictionary of parameters to fill template placeholders.
+            delay: Optional delay in seconds before starting execution.
+            max_retries: Maximum number of retry attempts on failure.
+            
+        Returns:
+            The model's response after successful execution, or Exception on failure.
+            
+        Example:
+            >>> chain = Agents.chain_create(llm, "Analyze this image: {base64_image}")
+            >>> response = await Agents.chain_batch_generator_async(
+            ...     chain, 
+            ...     {"base64_image": image_data},
+            ...     delay=0.5
+            ... )
         """
+        if dic is None:
+            dic = {}
+            
         attempt = 0
-        print("taks start at:", datetime.now())
+        print("Task started at:", datetime.now())
+        
         if delay:
-            print("Waiting for", delay, "seconds before starting the task.")
+            print(f"Waiting for {delay} seconds before starting the task.")
             await Agents._delay(delay)
+            
         while attempt <= max_retries:
             print("Attempting to invoke the chain...")
             try:
                 response = await chain.ainvoke(dic)
-                attempt += 1
                 return response
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {e}. Retrying...")
                 attempt += 1
+                print(f"Attempt {attempt} failed: {e}. Retrying...")
                 if attempt > max_retries:
-                    print("Max retries exceeded. with error:", e)
+                    print("Max retries exceeded. Error:", e)
                     return e
                 continue
-        return response
         
     @staticmethod
-    def output_parser(output_string):
+    def output_parser(output_string: str) -> List[Dict[str, str]]:
         """
-        this will parse the output TSV string from the llm model
-        Parse a TSV string into a JSON array of objects,
-        removing any code block wrappers (```) if present.
-        Specifically handles tab-separated values.
+        Parse TSV (Tab-Separated Values) output from LLM into structured data.
+        
+        This utility function processes LLM output that contains tabular data,
+        removing code block wrappers and converting to a list of dictionaries.
+        
         Args:
-            output_string (str): The input text which may contain TSV data with wrappers
+            output_string: The raw output from the LLM, potentially containing
+                          TSV data wrapped in code blocks (```).
+                          
         Returns:
-            list: List of dictionaries where keys are headers and values are row values
+            List of dictionaries where each dictionary represents a row,
+            with column headers as keys and cell values as values.
+            
+        Example:
+            >>> tsv_output = '''
+            ... ```
+            ... Name\tAge\tCity
+            ... John\t25\tNew York
+            ... Jane\t30\tLos Angeles
+            ... ```
+            ... '''
+            >>> result = Agents.output_parser(tsv_output)
+            >>> print(result)
+            [{'Name': 'John', 'Age': '25', 'City': 'New York'},
+             {'Name': 'Jane', 'Age': '30', 'City': 'Los Angeles'}]
         """
         # Remove code block wrappers if present
         tsv_string = re.sub(r'^```.*?\n|```$', '', output_string, flags=re.DOTALL).strip()
+        
         # Split the TSV string into lines
         lines = tsv_string.strip().split('\n')
-        # Extract header row and split by tab character
-        headers = lines[0].split('\t')
-        headers = [h.strip() for h in headers]  # Clean up any extra whitespace
-        # Initialize result list
+        
+        if not lines or len(lines) < 2:
+            return []
+            
+        # Extract and clean header row
+        headers = [h.strip() for h in lines[0].split('\t')]
         result = []
+        
         # Process each data row (skip the header row)
         for i in range(1, len(lines)):
-            # Skip empty lines
-            if not lines[i].strip():
+            line = lines[i].strip()
+            if not line:  # Skip empty lines
                 continue
-            # Split row by tab character
-            values = lines[i].split('\t')
-            values = [v.strip() for v in values]  # Clean up any extra whitespace
-            # Create a dictionary for the current row
+                
+            # Split row by tab character and clean values
+            values = [v.strip() for v in line.split('\t')]
+            
+            # Create dictionary for this row
             row_dict = {}
-            # Map each value to its corresponding header
             for j, header in enumerate(headers):
-                # Use empty string if value doesn't exist
                 row_dict[header] = values[j] if j < len(values) else ''
-            # Add the dictionary to the result list
+                
             result.append(row_dict)
+            
         return result
