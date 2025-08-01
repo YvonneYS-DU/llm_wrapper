@@ -5,8 +5,8 @@ This module provides a simplified API for creating and managing AI agents
 with multi-modal support (text and images) using LangChain framework.
 
 Author: LLM Wrapper Team
-Version: 0.1
-Date: January 2025
+Version: 0.2.1
+Date: Aug 2025
 """
 
 import re
@@ -16,7 +16,7 @@ from typing import List, Dict, Any, Optional, Union, Generator
 import base64
 
 import fitz
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
 
 # Importing necessary modules and classes from OpenAI and LangChain
@@ -661,3 +661,445 @@ class Agents:
             result.append(row_dict)
             
         return result
+
+
+
+
+class Contexts:
+    """
+    this is a utility class for create Context engineering for LLMs.
+    the context contain 3 parts:
+    1. create layer for context
+    2. create LLM context compression
+    3. automatic context management for LLMs
+    """
+    def __init__(self) -> None:
+        """
+        Initialize the Contexts class.
+        
+        Note: This class is primarily used as a utility class with static methods.
+        """
+        self.contexts: List[Any] = []
+    
+    @staticmethod
+    def create_context_layer(
+        context_template: str = 'context template string',
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Create a context layer for LLMs using a template and optional parameters.
+        
+        Args:
+            context_template: The context template string with {parameter} placeholders.
+            parameters: Optional dictionary of parameters to fill the template.
+            
+        Returns:
+            Formatted context string with parameters filled in.
+            
+        Example:
+            >>> context = Contexts.create_context_layer("Current date is {date}.", {"date": "2025-01-01"})
+            >>> print(context)  # "Current date is 2025-01-01."
+        """
+        if parameters is None:
+            parameters = {}
+            
+        return context_template.format(**parameters)
+    @staticmethod
+    def compress_context(
+        model: Any,
+        context_dict: Dict[str, Any],
+        compression_prompt: str = "Compress this context to under {max_tokens} tokens while preserving all key information: {context}",
+        max_tokens: int = 1000,
+        system_prompt: str = "You are a context compression expert. Compress the given context while preserving all important information.",
+        max_retries: int = 2
+    ) -> str:
+        """
+        Compress a context dictionary using an automatically created chain.
+        
+        This method creates an internal chain and automatically runs it to compress context.
+        The input context_dict must match the {} placeholders in compression_prompt.
+        
+        Args:
+            model: The language model instance (ChatOpenAI, ChatAnthropic, etc.).
+            context_dict: Dictionary with keys matching compression_prompt placeholders.
+            compression_prompt: Template string with {} placeholders matching context_dict keys.
+            max_tokens: Maximum number of tokens for the compressed context.
+            system_prompt: System prompt for the compression model.
+            max_retries: Maximum number of retry attempts on failure.
+            
+        Returns:
+            Compressed context string.
+            
+        Raises:
+            Exception: If all retry attempts fail.
+            ValueError: If context_dict keys don't match prompt placeholders.
+            
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> llm = ChatOpenAI(model_name='gpt-4o-mini')
+            >>> context = {"context": "long text to compress", "max_tokens": 500}
+            >>> compressed = Contexts.compress_context(
+            ...     model=llm,
+            ...     context_dict=context
+            ... )
+        """
+        # Extract prompt parameters to validate context_dict
+        prompt_params = Agents.extract_prompts_parameters(compression_prompt)
+        
+        # Validate that context_dict keys match prompt parameters
+        missing_params = set(prompt_params) - set(context_dict.keys())
+        if missing_params:
+            raise ValueError(f"Missing required parameters in context_dict: {missing_params}")
+        
+        # Add max_tokens to context if not present
+        final_context = context_dict.copy()
+        if "max_tokens" not in final_context:
+            final_context["max_tokens"] = max_tokens
+        
+        # Create compression chain internally
+        chain = Agents.chain_create(
+            model=model,
+            system_prompt_template=system_prompt,
+            text_prompt_template=compression_prompt
+        )
+        
+        # Execute the chain with automatic retry
+        return Agents.chain_batch_generator(
+            chain=chain,
+            dic=final_context,
+            max_retries=max_retries
+        )
+
+
+class Document:
+    """
+    A comprehensive document processing class for handling PDF, images, Word documents, and tables.
+    
+    This class provides functionality for:
+    1. PDF text extraction and image conversion
+    2. Image processing and enhancement for OCR
+    3. Word document reading
+    4. Table extraction and processing
+    
+    The main focus is on PDF and image processing with advanced features like
+    A4 sizing, DPI control, sharpening, and denoising for improved OCR results.
+    """
+    
+    def __init__(self) -> None:
+        """
+        Initialize the Document class.
+        """
+        self.supported_formats = {
+            'pdf': ['.pdf'],
+            'image': ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'],
+            'word': ['.docx', '.doc'],
+            'table': ['.xlsx', '.xls', '.csv']
+        }
+    
+    @staticmethod
+    def extract_text_from_pdf(
+        pdf_path: str,
+        start_page: int = 0,
+        end_page: Optional[int] = None
+    ) -> Dict[int, str]:
+        """
+        Extract text from PDF using fitz (PyMuPDF).
+        
+        Args:
+            pdf_path: Path to the PDF file.
+            start_page: Starting page number (0-indexed).
+            end_page: Ending page number (0-indexed). If None, process all pages.
+            
+        Returns:
+            Dictionary with page numbers as keys and extracted text as values.
+            
+        Example:
+            >>> text_dict = Document.extract_text_from_pdf("document.pdf")
+            >>> print(text_dict[0])  # Text from first page
+        """
+        text_dict = {}
+        
+        try:
+            pdf_document = fitz.open(pdf_path)
+            total_pages = len(pdf_document)
+            
+            if end_page is None:
+                end_page = total_pages - 1
+            
+            end_page = min(end_page, total_pages - 1)
+            
+            for page_num in range(start_page, end_page + 1):
+                page = pdf_document.load_page(page_num)
+                text = page.get_text()
+                text_dict[page_num] = text
+            
+            pdf_document.close()
+            
+        except Exception as e:
+            raise Exception(f"Error extracting text from PDF: {e}")
+        
+        return text_dict
+    
+    @staticmethod
+    def convert_pdf_to_images(
+        pdf_path: str,
+        dpi: int = 115,
+        output_format: str = 'jpeg',
+        a4_resize: bool = True,
+        target_width: int = 954,  # A4 width at 115 DPI
+        target_height: int = 1347,  # A4 height at 115 DPI
+        crop_box_mm: Optional[tuple] = None,
+        enhance_for_ocr: bool = False,
+        start_page: int = 0,
+        end_page: Optional[int] = None
+    ) -> List[Image.Image]:
+        """
+        Convert PDF pages to images with advanced processing options.
+        
+        Args:
+            pdf_path: Path to the PDF file.
+            dpi: Resolution for image conversion.
+            output_format: Output image format ('PNG', 'JPEG', etc.).
+            a4_resize: Whether to resize images to A4 dimensions.
+            target_width: Target width for A4 resize (pixels).
+            target_height: Target height for A4 resize (pixels).
+            crop_box_mm: Optional cropping area in millimeters (left, top, right, bottom).
+            enhance_for_ocr: Whether to apply OCR enhancement filters.
+            start_page: Starting page number (0-indexed).
+            end_page: Ending page number (0-indexed). If None, process all pages.
+            
+        Returns:
+            List of PIL Image objects.
+            
+        Example:
+            >>> images = Document.convert_pdf_to_images(
+            ...     "document.pdf", 
+            ...     dpi=300, 
+            ...     enhance_for_ocr=True
+            ... )
+        """
+        images = []
+        
+        try:
+            pdf_document = fitz.open(pdf_path)
+            total_pages = len(pdf_document)
+            
+            if end_page is None:
+                end_page = total_pages - 1
+            
+            end_page = min(end_page, total_pages - 1)
+            
+            for page_num in range(start_page, end_page + 1):
+                page = pdf_document.load_page(page_num)
+                
+                # Apply cropping if specified
+                if crop_box_mm:
+                    crop_box_pixels = (
+                        crop_box_mm[0] * dpi / 25.4,
+                        crop_box_mm[1] * dpi / 25.4,
+                        page.rect.width * dpi / 72 - crop_box_mm[2] * dpi / 25.4,
+                        page.rect.height * dpi / 72 - crop_box_mm[3] * dpi / 25.4
+                    )
+                    clip = fitz.Rect(*crop_box_pixels)
+                    pix = page.get_pixmap(dpi=dpi, clip=clip)
+                else:
+                    pix = page.get_pixmap(dpi=dpi)
+                
+                # Convert to PIL Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                
+                # Resize to A4 if requested
+                if a4_resize:
+                    img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                
+                # Apply OCR enhancement if requested
+                if enhance_for_ocr:
+                    img = Document._enhance_image_for_ocr(img)
+                
+                images.append(img)
+            
+            pdf_document.close()
+            
+        except Exception as e:
+            raise Exception(f"Error converting PDF to images: {e}")
+        
+        return images
+    
+    @staticmethod
+    def _enhance_image_for_ocr(
+        image: Image.Image,
+        contrast_factor: float = 1.05,
+        brightness_factor: float = 1.02,
+        sharpness_factor: float = 1.05,
+        enable_smoothing: bool = False
+    ) -> Image.Image:
+        """
+        Apply image enhancement filters to improve OCR accuracy using PIL only.
+        
+        This method applies a series of enhancements:
+        1. Convert to RGB if not already
+        2. Increase contrast (conservative default)
+        3. Apply brightness adjustment
+        4. Apply sharpening filter
+        5. Apply smoothing filter for noise reduction (PIL-based)
+        
+        Args:
+            image: PIL Image object to enhance.
+            contrast_factor: Contrast enhancement factor (1.0 = no change, default 1.05 for conservative enhancement).
+            brightness_factor: Brightness adjustment factor (1.0 = no change).
+            sharpness_factor: Sharpness enhancement factor (1.0 = no change, default 1.2).
+            enable_smoothing: Whether to apply smoothing filter for noise reduction.
+            
+        Returns:
+            Enhanced PIL Image object.
+        """
+        # Convert to RGB if not already
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Apply contrast enhancement
+        if contrast_factor != 1.0:
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(contrast_factor)
+        
+        # Apply brightness adjustment
+        if brightness_factor != 1.0:
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(brightness_factor)
+        
+        # Apply sharpening
+        if sharpness_factor != 1.0:
+            enhancer = ImageEnhance.Sharpness(image)
+            image = enhancer.enhance(sharpness_factor)
+        
+        # Apply smoothing for noise reduction (PIL-based alternative to OpenCV denoising)
+        if enable_smoothing:
+            image = image.filter(ImageFilter.SMOOTH_MORE)
+        
+        return image
+    
+    @staticmethod
+    def process_image_file(
+        image_path: str,
+        enhance_for_ocr: bool = False,
+        resize_to_a4: bool = False,
+        target_width: int = 954,
+        target_height: int = 1347,
+        adjust_contrast: float = 1.0,
+        adjust_brightness: float = 1.0,
+        adjust_sharpness: float = 1.0,
+        enable_smoothing: bool = False
+    ) -> Image.Image:
+        """
+        Process an image file with various enhancement options using PIL only.
+        
+        Args:
+            image_path: Path to the image file.
+            enhance_for_ocr: Apply comprehensive OCR enhancement.
+            resize_to_a4: Resize image to A4 dimensions.
+            target_width: Target width for resizing.
+            target_height: Target height for resizing.
+            adjust_contrast: Contrast adjustment factor (1.0 = no change).
+            adjust_brightness: Brightness adjustment factor (1.0 = no change).
+            adjust_sharpness: Sharpness adjustment factor (1.0 = no change).
+            enable_smoothing: Apply smoothing filter for noise reduction.
+            
+        Returns:
+            Processed PIL Image object.
+            
+        Example:
+            >>> img = Document.process_image_file(
+            ...     "document.jpg",
+            ...     enhance_for_ocr=True,
+            ...     resize_to_a4=True
+            ... )
+        """
+        try:
+            # Load image
+            image = Image.open(image_path)
+            
+            # Convert to RGB if not already
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Resize to A4 if requested
+            if resize_to_a4:
+                image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            
+            # Apply comprehensive OCR enhancement
+            if enhance_for_ocr:
+                image = Document._enhance_image_for_ocr(image)
+            else:
+                # Apply individual enhancements if requested
+                if adjust_contrast != 1.0:
+                    enhancer = ImageEnhance.Contrast(image)
+                    image = enhancer.enhance(adjust_contrast)
+                
+                if adjust_brightness != 1.0:
+                    enhancer = ImageEnhance.Brightness(image)
+                    image = enhancer.enhance(adjust_brightness)
+                
+                if adjust_sharpness != 1.0:
+                    enhancer = ImageEnhance.Sharpness(image)
+                    image = enhancer.enhance(adjust_sharpness)
+                
+                if enable_smoothing:
+                    image = image.filter(ImageFilter.SMOOTH_MORE)
+            
+            return image
+            
+        except Exception as e:
+            raise Exception(f"Error processing image file: {e}")
+    
+    @staticmethod
+    def pdf_to_base64_images(
+        pdf_path: str,
+        dpi: int = 115,
+        enhance_for_ocr: bool = True,
+        a4_resize: bool = True,
+        start_page: int = 0,
+        end_page: Optional[int] = None
+    ) -> List[str]:
+        """
+        Convert PDF to base64-encoded images for LLM processing.
+        
+        This method combines PDF conversion and base64 encoding in one step,
+        optimized for LLM vision models.
+        
+        Args:
+            pdf_path: Path to the PDF file.
+            dpi: Resolution for image conversion.
+            enhance_for_ocr: Apply OCR enhancement filters.
+            a4_resize: Resize to A4 dimensions.
+            start_page: Starting page number (0-indexed).
+            end_page: Ending page number (0-indexed).
+            
+        Returns:
+            List of base64-encoded image strings.
+            
+        Example:
+            >>> base64_images = Document.pdf_to_base64_images(
+            ...     "document.pdf",
+            ...     dpi=300,
+            ...     enhance_for_ocr=True
+            ... )
+        """
+        # Convert PDF to images
+        images = Document.convert_pdf_to_images(
+            pdf_path=pdf_path,
+            dpi=dpi,
+            enhance_for_ocr=enhance_for_ocr,
+            a4_resize=a4_resize,
+            start_page=start_page,
+            end_page=end_page
+        )
+        
+        # Convert images to base64
+        base64_images = []
+        for img in images:
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG", quality=85)
+            base64_string = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            base64_images.append(base64_string)
+        
+        return base64_images
