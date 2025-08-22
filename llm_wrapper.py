@@ -11,6 +11,7 @@ Date: Aug 2025
 
 import re
 import asyncio
+import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union, Generator
 import base64
@@ -548,7 +549,480 @@ class Agents:
                 else:
                     continue
     
-    
+    @staticmethod
+    def continue_chain_batch_generator(
+        chain: Any, 
+        dic: Dict[str, Any] = None, 
+        max_retries: int = 2,
+        max_continue: int = 5,
+        trigger_type: str = "str",
+        continue_trigger: Union[str, Dict[str, Any]] = "continue",
+        result_cache: List[str] = None,
+        history_key: Union[bool, str] = False
+    ) -> str:
+        """
+        A utility function to continue the chain batch generator for very long conversations.
+        
+        This function handles cases where the AI response is cut off due to token limits
+        and needs to be continued. It automatically detects when continuation is needed
+        and manages the conversation context.
+        
+        Args:
+            chain: The chain object created by Agents.chain_create().
+            dic: Dictionary of parameters to fill template placeholders.
+            max_retries: Maximum number of retry attempts on failure per continuation.
+            max_continue: Maximum number of continuation attempts.
+            trigger_type: Type of trigger detection. Options:
+                - "str": Simple string matching (default)
+                - "json": JSON format detection
+            continue_trigger: Trigger configuration:
+                - For trigger_type="str": string keyword or dict with keywords
+                - For trigger_type="json": dict like {"continue": "continue"}
+            result_cache: List to store accumulated results from all continuations.
+            history_key: Control history context management. Options:
+                - False: Disable history management (default behavior)
+                - str: Enable history management with custom key name (e.g., "my_history")
+                  When string provided, adds history content to dic with specified key name
+            
+        Returns:
+            The complete concatenated response from all continuation attempts.
+            
+        Examples:
+            >>> # Simple string trigger
+            >>> chain = Agents.chain_create(llm, "Write a detailed essay about {topic}")
+            >>> response = Agents.continue_chain_batch_generator(
+            ...     chain,
+            ...     {"topic": "artificial intelligence"},
+            ...     trigger_type="str",
+            ...     continue_trigger="continue"
+            ... )
+            
+            >>> # JSON format trigger
+            >>> response = Agents.continue_chain_batch_generator(
+            ...     chain,
+            ...     {"topic": "machine learning"},
+            ...     trigger_type="json",
+            ...     continue_trigger={"continue": "continue"}
+            ... )
+            
+            >>> # For JSON outputs: {"content": "...", "continue": true}
+            >>> # For XML-style: "Some text... <continue/>"
+            >>> # For text: "Some text... continue"
+            
+            >>> # Using custom history key
+            >>> response = Agents.continue_chain_batch_generator(
+            ...     chain,
+            ...     {"topic": "machine learning", "task": "explain concepts"},
+            ...     history_key="conversation_history"
+            ... )
+            >>> # This adds "conversation_history" to dic containing all previous responses
+        """
+        if dic is None:
+            dic = {}
+        if result_cache is None:
+            result_cache = []
+            
+        continue_count = 0
+        
+        # Initialize history key for first call if using custom history key
+        if history_key and isinstance(history_key, str):
+            if history_key not in dic:
+                dic[history_key] = "first call, no history"  # Add empty default value for first call
+        
+        # Get initial response
+        try:
+            initial_response = Agents.chain_batch_generator(chain, dic, max_retries)
+            result_cache.append(str(initial_response))
+            current_response = str(initial_response)
+        except Exception as e:
+            raise Exception(f"Failed to get initial response: {e}")
+        
+        # Check if continuation is needed and continue until max_continue or no trigger found
+        while continue_count < max_continue:
+            # Check if the response appears to be cut off or contains continuation trigger
+            response_lower = current_response.lower().strip()
+            
+            # Common indicators that response was cut off
+            needs_continuation = (
+                response_lower.endswith(('...', '…')) or
+                Agents._check_continue_trigger(trigger_type, continue_trigger, current_response) or  # Check trigger
+                len(current_response.strip()) == 0 or
+                response_lower.endswith(('.', ',', ';', ':')) == False or  # Doesn't end with proper punctuation
+                response_lower.endswith(('to be continued', 'continued...', 'continue reading'))
+            )
+            
+            if not needs_continuation:
+                break
+                
+            continue_count += 1
+            
+            # Prepare continuation prompt
+            continuation_dic = dic.copy()
+            
+            # Handle history management based on history_key parameter
+            if history_key:
+                # If history_key is a string, use it as custom key name
+                if isinstance(history_key, str):
+                    conversation_context = "\n".join(result_cache)
+                    continuation_dic[history_key] = conversation_context
+                else:
+                    # If history_key is True, use default behavior
+                    conversation_context = "\n".join(result_cache)
+                    if 'context' not in continuation_dic:
+                        continuation_dic['context'] = conversation_context
+                    if 'previous_response' not in continuation_dic:
+                        continuation_dic['previous_response'] = current_response
+                        
+                    # Add continuation instruction
+                    continuation_dic['continuation_instruction'] = f"Please continue from where you left off. Previous response: ...{current_response[-200:]}"
+            else:
+                # Original behavior: always add context management keys
+                conversation_context = "\n".join(result_cache)
+                if 'context' not in continuation_dic:
+                    continuation_dic['context'] = conversation_context
+                if 'previous_response' not in continuation_dic:
+                    continuation_dic['previous_response'] = current_response
+                    
+                # Add continuation instruction
+                continuation_dic['continuation_instruction'] = f"Please continue from where you left off. Previous response: ...{current_response[-200:]}"
+            
+            try:
+                # Get continuation response
+                continuation_response = Agents.chain_batch_generator(chain, continuation_dic, max_retries)
+                current_response = str(continuation_response)
+                result_cache.append(current_response)
+                
+            except Exception as e:
+                print(f"Warning: Failed to get continuation {continue_count}: {e}")
+                break
+        
+        # Return the complete concatenated response with smart merging
+        complete_response = Agents._merge_response_cache(result_cache, trigger_type, continue_trigger)
+        return complete_response
+
+    @staticmethod
+    def _check_continue_trigger(trigger_type: str, continue_trigger: Union[str, Dict[str, Any]], response_text: str) -> bool:
+        """
+        Helper method to check if continuation trigger is detected.
+        
+        Args:
+            trigger_type: Type of trigger - 'str' for string matching, 'json' for JSON format
+            continue_trigger: Trigger configuration (str or dict for json type)
+            response_text: Full response text to check
+            
+        Returns:
+            bool: True if trigger is detected, False otherwise
+        """
+        response_lower = response_text.lower().strip()
+        
+        if trigger_type == "json":
+            # For JSON type, continue_trigger should be a dict like {'continue': 'continue'}
+            if isinstance(continue_trigger, dict):
+                try:
+                    # Try to parse response as JSON
+                    json_data = json.loads(response_text.strip())
+                    if isinstance(json_data, dict):
+                        # Check if any key in continue_trigger exists in response
+                        for key, expected_value in continue_trigger.items():
+                            if key in json_data:
+                                actual_value = str(json_data[key]).lower()
+                                expected_value_lower = str(expected_value).lower()
+                                # Check for exact match or common truthy values
+                                if (actual_value == expected_value_lower or 
+                                    actual_value in ['true', 'yes', '1', 'continue', 'next', 'more']):
+                                    return True
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return False
+            
+        elif trigger_type == "str":
+            # For string type, check in last part of response for robustness
+            if isinstance(continue_trigger, str):
+                # Simple string case - check last 100 characters
+                check_length = 100
+                return continue_trigger.lower() in response_lower[-check_length:]
+            elif isinstance(continue_trigger, dict):
+                keywords = continue_trigger.get('keywords', ['continue'])
+                min_length = continue_trigger.get('min_length', 0)
+                check_length = continue_trigger.get('check_length', 100)
+                
+                # Check minimum length requirement first
+                if min_length > 0 and len(response_text.strip()) < min_length:
+                    return True
+                    
+                # Check for keyword triggers in text (last part of response)
+                for keyword in keywords:
+                    if keyword.lower() in response_lower[-check_length:]:
+                        return True
+                
+        return False
+
+    @staticmethod
+    def _normalize_json_trigger(json_str: str) -> Dict[str, Any]:
+        """
+        Normalize JSON string trigger to dict format with cleanup markers.
+        
+        Args:
+            json_str: JSON string like '{"continue": "continue"}'
+            
+        Returns:
+            Dict with normalized format
+        """
+        try:
+            parsed = json.loads(json_str)
+            if isinstance(parsed, dict):
+                # Generate cleanup markers for both JSON and Python dict formats
+                cleanup_markers = []
+                for key, value in parsed.items():
+                    cleanup_markers.extend([
+                        f'{{"{key}": "{value}"}}',  # Complete JSON object
+                        f"{{'key': '{value}'}}".replace('key', key),  # Complete Python dict
+                        f'"{key}": "{value}"',  # JSON key-value pair
+                        f"'{key}': '{value}'",  # Python dict key-value pair
+                    ])
+                return {
+                    "trigger_type": "json",
+                    "keywords": list(parsed.values()),
+                    "json_keys": list(parsed.keys()),
+                    "cleanup_markers": cleanup_markers
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        # Fallback to simple string
+        return {
+            "trigger_type": "str",
+            "keywords": [json_str]
+        }
+
+    @staticmethod
+    def _merge_response_cache(result_cache: List[str], trigger_type: str, continue_trigger: Union[str, Dict[str, Any]]) -> str:
+        """
+        Simple merge of response cache with configurable cleaning.
+        Auto-normalizes trigger format for user convenience.
+        
+        Args:
+            result_cache: List of response fragments
+            trigger_type: Type of trigger - 'str' for string matching, 'json' for JSON format
+            continue_trigger: Trigger configuration for cleaning
+            
+        Returns:
+            str: Merged response
+        """
+        if not result_cache:
+            return ""
+        
+        # Process each response fragment
+        cleaned_parts = []
+        for response in result_cache:
+            current_part = response.strip()
+            
+            if trigger_type == "json":
+                # For JSON triggers, remove JSON trigger markers
+                if isinstance(continue_trigger, dict):
+                    # Remove JSON objects that match the trigger pattern
+                    for key, value in continue_trigger.items():
+                        # Remove patterns like {"continue": "continue"}
+                        json_pattern = f'{{"{key}": "{value}"}}'
+                        current_part = current_part.replace(json_pattern, "")
+                        # Also try with single quotes
+                        json_pattern_single = f"{{'{key}': '{value}'}}"
+                        current_part = current_part.replace(json_pattern_single, "")
+                        
+            elif trigger_type == "str":
+                # For string triggers, use smart cleaning logic
+                if isinstance(continue_trigger, str):
+                    # Simple string case - check last 100 characters for trigger
+                    trigger_word = continue_trigger.lower().strip()
+                    current_lower = current_part.lower()
+                    check_length = 100
+                    
+                    # Check if trigger appears in the last check_length characters
+                    if trigger_word in current_lower[-check_length:]:
+                        # Find the last occurrence of the trigger
+                        idx = current_lower.rfind(trigger_word)
+                        if idx >= 0:
+                            # Check what comes after the trigger
+                            suffix = current_part[idx + len(trigger_word):]
+                            # If suffix contains only dots, spaces, or common continuation symbols, remove it all
+                            if re.match(r'^[.\s…-]*$', suffix):
+                                current_part = current_part[:idx].strip()
+                
+                elif isinstance(continue_trigger, dict):
+                    # Handle dict format for string triggers
+                    keywords = continue_trigger.get("keywords", [])
+                    cleanup_markers = continue_trigger.get('cleanup_markers', [])
+                    check_length = continue_trigger.get('check_length', 100)
+                    
+                    # Remove cleanup markers first
+                    for marker in cleanup_markers:
+                        current_part = current_part.replace(marker, "")
+                    
+                    # Smart keyword removal from end of text
+                    current_lower = current_part.lower()
+                    for keyword in keywords:
+                        keyword_lower = keyword.lower().strip()
+                        # Check if keyword appears in the last check_length characters
+                        if keyword_lower in current_lower[-check_length:]:
+                            # Find the last occurrence of the keyword
+                            idx = current_lower.rfind(keyword_lower)
+                            if idx >= 0:
+                                # Check what comes after the keyword
+                                suffix = current_part[idx + len(keyword):]
+                                # If suffix contains only dots, spaces, or common continuation symbols, remove it all
+                                if re.match(r'^[.\s…-]*$', suffix):
+                                    current_part = current_part[:idx].strip()
+                                    break  # Only remove first match
+            
+            # Add non-empty parts
+            if current_part:
+                cleaned_parts.append(current_part)
+        
+        # Join with newlines for better readability
+        return '\n'.join(cleaned_parts)
+
+    @staticmethod
+    async def continue_chain_batch_generator_async(
+        chain: Any, 
+        dic: Dict[str, Any] = None, 
+        max_retries: int = 2,
+        max_continue: int = 5,
+        trigger_type: str = "str",
+        continue_trigger: Union[str, Dict[str, Any]] = "continue",
+        result_cache: List[str] = None,
+        delay: Optional[float] = None,
+        history_key: Union[bool, str] = False
+    ) -> str:
+        """
+        Async version of continue_chain_batch_generator for very long conversations.
+        
+        This function handles cases where the AI response is cut off due to token limits
+        and needs to be continued asynchronously with optional delays.
+        
+        Args:
+            chain: The chain object created by Agents.chain_create().
+            dic: Dictionary of parameters to fill template placeholders.
+            max_retries: Maximum number of retry attempts on failure per continuation.
+            max_continue: Maximum number of continuation attempts.
+            trigger_type: Type of trigger detection. Options:
+                - "str": Simple string matching (default)
+                - "json": JSON format detection
+            continue_trigger: Trigger configuration:
+                - For trigger_type="str": string keyword or dict with keywords
+                - For trigger_type="json": dict like {"continue": "continue"}
+            result_cache: List to store accumulated results from all continuations.
+            delay: Optional delay in seconds between continuation attempts.
+            history_key: Control history context management. Options:
+                - False: Disable history management (default behavior)
+                - str: Enable history management with custom key name (e.g., "my_history")
+                  When string provided, adds history content to dic with specified key name
+            
+        Returns:
+            The complete concatenated response from all continuation attempts.
+            
+        Examples:
+            >>> # Async with delay and advanced triggers
+            >>> chain = Agents.chain_create(llm, "Write a detailed analysis of {topic}")
+            >>> response = await Agents.continue_chain_batch_generator_async(
+            ...     chain,
+            ...     {"topic": "machine learning trends"},
+            ...     trigger_type="json",
+            ...     continue_trigger={"continue": "continue"},
+            ...     delay=1.0
+            ... )
+            
+            >>> # Supports same format detection as sync version:
+            >>> # JSON: {"analysis": "...", "continue": true}
+            >>> # XML: "Analysis content... <continue/>"
+            >>> # Text: "Analysis content... 继续"
+        """
+        if dic is None:
+            dic = {}
+        if result_cache is None:
+            result_cache = []
+            
+        continue_count = 0
+        
+        # Initialize history key for first call if using custom history key
+        if history_key and isinstance(history_key, str):
+            if history_key not in dic:
+                dic[history_key] = " first call, no history"  # Add empty default value for first call
+        
+        # Get initial response
+        try:
+            initial_response = await Agents.chain_batch_generator_async(chain, dic, delay, max_retries)
+            result_cache.append(str(initial_response))
+            current_response = str(initial_response)
+        except Exception as e:
+            raise Exception(f"Failed to get initial response: {e}")
+        
+        # Check if continuation is needed and continue until max_continue or no trigger found
+        while continue_count < max_continue:
+            # Check if the response appears to be cut off or contains continuation trigger
+            response_lower = current_response.lower().strip()
+            
+            # Common indicators that response was cut off
+            needs_continuation = (
+                response_lower.endswith(('...', '…')) or
+                Agents._check_continue_trigger(trigger_type, continue_trigger, current_response) or  # Check trigger
+                len(current_response.strip()) == 0 or
+                response_lower.endswith(('.', ',', ';', ':')) == False or  # Doesn't end with proper punctuation
+                response_lower.endswith(('to be continued', 'continued...', 'continue reading'))
+            )
+            
+            if not needs_continuation:
+                break
+                
+            continue_count += 1
+            
+            # Add delay between continuation attempts if specified
+            if delay:
+                await Agents._delay(delay)
+            
+            # Prepare continuation prompt
+            continuation_dic = dic.copy()
+            
+            # Handle history management based on history_key parameter
+            if history_key:
+                # If history_key is a string, use it as custom key name
+                if isinstance(history_key, str):
+                    conversation_context = "\n".join(result_cache)
+                    continuation_dic[history_key] = conversation_context
+                else:
+                    # If history_key is True, use default behavior
+                    conversation_context = "\n".join(result_cache)
+                    if 'context' not in continuation_dic:
+                        continuation_dic['context'] = conversation_context
+                    if 'previous_response' not in continuation_dic:
+                        continuation_dic['previous_response'] = current_response
+                        
+                    # Add continuation instruction
+                    continuation_dic['continuation_instruction'] = f"Please continue from where you left off. Previous response: ...{current_response[-200:]}"
+            else:
+                # Original behavior: always add context management keys
+                conversation_context = "\n".join(result_cache)
+                if 'context' not in continuation_dic:
+                    continuation_dic['context'] = conversation_context
+                if 'previous_response' not in continuation_dic:
+                    continuation_dic['previous_response'] = current_response
+                    
+                # Add continuation instruction
+                continuation_dic['continuation_instruction'] = f"Please continue from where you left off. Previous response: ...{current_response[-200:]}"
+            
+            try:
+                # Get continuation response
+                continuation_response = await Agents.chain_batch_generator_async(chain, continuation_dic, None, max_retries)
+                current_response = str(continuation_response)
+                result_cache.append(current_response)
+                
+            except Exception as e:
+                print(f"Warning: Failed to get continuation {continue_count}: {e}")
+                break
+        
+        # Return the complete concatenated response with smart merging
+        complete_response = Agents._merge_response_cache(result_cache, trigger_type, continue_trigger)
+        return complete_response
+
     @staticmethod
     async def chain_batch_generator_async(
         chain: Any, 
@@ -601,7 +1075,6 @@ class Agents:
                     print("Max retries exceeded. Error:", e)
                     return e
                 continue
-        
     @staticmethod
     def output_parser(output_string: str) -> List[Dict[str, str]]:
         """
