@@ -558,7 +558,8 @@ class Agents:
         trigger_type: str = "str",
         continue_trigger: Union[str, Dict[str, Any]] = "continue",
         result_cache: List[str] = None,
-        history_key: Union[bool, str] = False
+        history_key: Union[bool, str] = False,
+        show_progress: bool = False
     ) -> str:
         """
         A utility function to continue the chain batch generator for very long conversations.
@@ -583,6 +584,7 @@ class Agents:
                 - False: Disable history management (default behavior)
                 - str: Enable history management with custom key name (e.g., "my_history")
                   When string provided, adds history content to dic with specified key name
+            show_progress: Whether to output the current loop iteration number.
             
         Returns:
             The complete concatenated response from all continuation attempts.
@@ -617,6 +619,17 @@ class Agents:
             ... )
             >>> # This adds "conversation_history" to dic containing all previous responses
         """
+        # Validate and normalize trigger_type with fuzzy matching
+        str_variants = ["str", "STR", "STRING", "string", "String", "text", "TEXT", "Text"]
+        json_variants = ["json", "JSON", "Json", "JSON_FORMAT", "json_format"]
+        
+        if trigger_type in str_variants:
+            trigger_type = "str"  # Normalize to standard form
+        elif trigger_type in json_variants:
+            trigger_type = "json"  # Normalize to standard form
+        else:
+            raise ValueError(f"trigger_type must be a string variant (str/STR/STRING/string/text) or json variant (json/JSON/Json), got '{trigger_type}'")
+            
         if dic is None:
             dic = {}
         if result_cache is None:
@@ -628,6 +641,10 @@ class Agents:
         if history_key and isinstance(history_key, str):
             if history_key not in dic:
                 dic[history_key] = "first call, no history"  # Add empty default value for first call
+        
+        # Show initial progress if requested
+        if show_progress:
+            print(f"Starting continue_chain_batch_generator - Loop 0 (initial call)")
         
         # Get initial response
         try:
@@ -655,6 +672,10 @@ class Agents:
                 break
                 
             continue_count += 1
+            
+            # Show progress if requested
+            if show_progress:
+                print(f"Continue loop {continue_count} / {max_continue} - Processing continuation...")
             
             # Prepare continuation prompt
             continuation_dic = dic.copy()
@@ -692,9 +713,21 @@ class Agents:
                 current_response = str(continuation_response)
                 result_cache.append(current_response)
                 
+                # Show completion progress if requested
+                if show_progress:
+                    print(f"Loop {continue_count} completed successfully")
+                
             except Exception as e:
-                print(f"Warning: Failed to get continuation {continue_count}: {e}")
+                if show_progress:
+                    print(f"Warning: Failed to get continuation {continue_count}: {e}")
+                else:
+                    print(f"Warning: Failed to get continuation {continue_count}: {e}")
                 break
+        
+        # Show final progress if requested
+        if show_progress:
+            total_loops = continue_count + 1  # Include initial call
+            print(f"Continue_chain_batch_generator completed - Total loops: {total_loops} (0 initial + {continue_count} continuations)")
         
         # Return the complete concatenated response with smart merging
         complete_response = Agents._merge_response_cache(result_cache, trigger_type, continue_trigger)
@@ -712,7 +745,21 @@ class Agents:
             
         Returns:
             bool: True if trigger is detected, False otherwise
+            
+        Raises:
+            ValueError: If trigger_type is not 'str' or 'json'
         """
+        # Validate and normalize trigger_type with fuzzy matching
+        str_variants = ["str", "STR", "STRING", "string", "String", "text", "TEXT", "Text"]
+        json_variants = ["json", "JSON", "Json", "JSON_FORMAT", "json_format"]
+        
+        if trigger_type in str_variants:
+            trigger_type = "str"  # Normalize to standard form
+        elif trigger_type in json_variants:
+            trigger_type = "json"  # Normalize to standard form
+        else:
+            raise ValueError(f"trigger_type must be a string variant (str/STR/STRING/string/text) or json variant (json/JSON/Json), got '{trigger_type}'")
+            
         response_lower = response_text.lower().strip()
         
         if trigger_type == "json":
@@ -799,7 +846,6 @@ class Agents:
     def _merge_response_cache(result_cache: List[str], trigger_type: str, continue_trigger: Union[str, Dict[str, Any]]) -> str:
         """
         Simple merge of response cache with configurable cleaning.
-        Auto-normalizes trigger format for user convenience.
         
         Args:
             result_cache: List of response fragments
@@ -808,7 +854,21 @@ class Agents:
             
         Returns:
             str: Merged response
+            
+        Raises:
+            ValueError: If trigger_type is not 'str' or 'json'
         """
+        # Validate and normalize trigger_type with fuzzy matching
+        str_variants = ["str", "STR", "STRING", "string", "String", "text", "TEXT", "Text"]
+        json_variants = ["json", "JSON", "Json", "JSON_FORMAT", "json_format"]
+        
+        if trigger_type in str_variants:
+            trigger_type = "str"  # Normalize to standard form
+        elif trigger_type in json_variants:
+            trigger_type = "json"  # Normalize to standard form
+        else:
+            raise ValueError(f"trigger_type must be a string variant (str/STR/STRING/string/text) or json variant (json/JSON/Json), got '{trigger_type}'")
+            
         if not result_cache:
             return ""
         
@@ -891,7 +951,8 @@ class Agents:
         continue_trigger: Union[str, Dict[str, Any]] = "continue",
         result_cache: List[str] = None,
         delay: Optional[float] = None,
-        history_key: Union[bool, str] = False
+        history_key: Union[bool, str] = False,
+        show_progress: bool = False
     ) -> str:
         """
         Async version of continue_chain_batch_generator for very long conversations.
@@ -916,6 +977,7 @@ class Agents:
                 - False: Disable history management (default behavior)
                 - str: Enable history management with custom key name (e.g., "my_history")
                   When string provided, adds history content to dic with specified key name
+            show_progress: Whether to output the current loop iteration number.
             
         Returns:
             The complete concatenated response from all continuation attempts.
@@ -936,6 +998,17 @@ class Agents:
             >>> # XML: "Analysis content... <continue/>"
             >>> # Text: "Analysis content... 继续"
         """
+        # Validate and normalize trigger_type with fuzzy matching
+        str_variants = ["str", "STR", "STRING", "string", "String", "text", "TEXT", "Text"]
+        json_variants = ["json", "JSON", "Json", "JSON_FORMAT", "json_format"]
+        
+        if trigger_type in str_variants:
+            trigger_type = "str"  # Normalize to standard form
+        elif trigger_type in json_variants:
+            trigger_type = "json"  # Normalize to standard form
+        else:
+            raise ValueError(f"trigger_type must be a string variant (str/STR/STRING/string/text) or json variant (json/JSON/Json), got '{trigger_type}'")
+            
         if dic is None:
             dic = {}
         if result_cache is None:
