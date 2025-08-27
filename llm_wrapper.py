@@ -17,6 +17,8 @@ import base64
 
 import fitz
 from PIL import Image, ImageEnhance, ImageFilter
+from pillow_heif import register_heif_opener
+
 from io import BytesIO
 
 # Importing necessary modules and classes from OpenAI and LangChain
@@ -193,7 +195,7 @@ class Agents:
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{base64_image}",
+                    "url": f"data:image/jpeg;base64,{base64_image}",
                     "detail": f"{detail_parameter}"
                 }
             }
@@ -203,6 +205,71 @@ class Agents:
         image_prompts = HumanMessagePromptTemplate.from_template(template_string)
         
         return image_prompts
+
+    @staticmethod
+    def normalize_image_to_base64(
+        image_path: str,
+        target_format: str = 'JPEG',
+        quality: int = 105,
+        max_size: tuple = (2048, 2048)
+    ) -> str:
+        """
+        Normalize any image format to base64-encoded JPEG/PNG for LLM processing.
+        
+        Handles HEIC/HEIF, WebP, BMP, TIFF and converts them to standard formats.
+        Also resizes large images to reduce token usage.
+        
+        Args:
+            image_path: Path to the image file.
+            target_format: Output format ('JPEG' or 'PNG').
+            quality: JPEG compression quality (1-100).
+            max_size: Maximum dimensions (width, height) to resize to.
+            
+        Returns:
+            Base64-encoded image string ready for LLM processing.
+            
+        Raises:
+            Exception: If image processing fails.
+            
+        Example:
+            >>> base64_img = Agents.normalize_image_to_base64("/path/to/image.heic")
+        """
+        try:
+            # Try to register HEIF support if available
+            try:
+                register_heif_opener()
+            except ImportError:
+                pass  # HEIF support not available
+            
+            # Open and convert image using PIL
+            with Image.open(image_path) as img:
+                # Convert to RGB if necessary (handles RGBA, P, etc.)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    # Create white background for transparency
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                    img = background
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Resize if image is too large
+                if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
+                    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+                
+                # Convert to base64
+                buffered = BytesIO()
+                save_kwargs = {'format': target_format}
+                if target_format == 'JPEG':
+                    save_kwargs['quality'] = quality
+                    save_kwargs['optimize'] = True
+                
+                img.save(buffered, **save_kwargs)
+                return base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+        except Exception as e:
+            raise Exception(f"Failed to process image {image_path}: {e}")
 
     @staticmethod
     def list_to_img_dict(img_list: List[str]) -> Dict[str, str]:
@@ -295,28 +362,34 @@ class Agents:
         if image_list is None:
             image_list = []
             
-        if system_prompt_template:  # system prompt
-            chat_prompt_template = ChatPromptTemplate.from_messages(
-                messages=[
-                    Agents._system_prompts(system_prompt_template),
-                    Agents._text_prompts(text_prompt_template),
-                    *([Agents._image_prompts_base64()] if image_prompt_template else []),
-                ]
-            )
-        else:
-            if image_list:  # multi-image prompt
-                chat_prompt_template = Agents.multi_image_templates(
-                    text_prompt_template=text_prompt_template, 
-                    image_list=image_list, 
-                    fill_img=fill_img
-                )
-            else:  # zero/single-image prompt
-                chat_prompt_template = ChatPromptTemplate.from_messages(
-                    messages=[
-                        Agents._text_prompts(text_prompt_template),  
-                        *([Agents._image_prompts_base64()] if image_prompt_template else [])
+        # Determine image prompts based on configuration
+        image_prompts = []
+        if image_prompt_template:
+            if image_list:  # multi-image scenario
+                if fill_img:
+                    # Use actual image data from image_list
+                    image_prompts = [
+                        Agents._image_prompts_base64_multi(image, 'high')
+                        for image in image_list
                     ]
-                )
+                else:
+                    # Use placeholders (img1, img2, ...)
+                    image_prompts = [
+                        Agents._image_prompts_base64_multi(f"img{i+1}", 'high')
+                        for i in range(len(image_list))
+                    ]
+            else:  # single-image scenario
+                image_prompts = [Agents._image_prompts_base64()]
+        
+        # Build message list
+        messages = []
+        if system_prompt_template:
+            messages.append(Agents._system_prompts(system_prompt_template))
+        
+        messages.append(Agents._text_prompts(text_prompt_template))
+        messages.extend(image_prompts)
+        
+        chat_prompt_template = ChatPromptTemplate.from_messages(messages=messages)
         return chat_prompt_template
     
     @staticmethod
